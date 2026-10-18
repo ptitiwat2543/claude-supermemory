@@ -214,7 +214,9 @@ describe('recall-directive hook', () => {
     assert.match(context, /defaults to this project's container/);
     assert.doesNotMatch(context, /omit containerTag to search the account/i);
     assert.match(plain(output.systemMessage), /^◪ supermemory · recalled \d+ memories \(\d+ tok\)$/);
-    assert.equal(stub.requests.length, 2);
+    // The prompt hook only injects search hits, so it must not wait on /profile.
+    assert.equal(stub.requests.length, 1);
+    assert.ok(stub.requests.every((request) => !request.url.endsWith('/profile')));
     const searchRequest = stub.requests.find((request) => request.url.endsWith('/search'));
     assert.ok(searchRequest);
     assert.equal(
@@ -229,6 +231,64 @@ describe('recall-directive hook', () => {
     assert.equal(state.search.count, 1);
     assert.equal(state.search.results, 4);
     assert.equal(state.search.memories, 4);
+  });
+
+  function gitShim(home, delaySeconds) {
+    // git on /mnt/c from WSL goes through git.exe and can take seconds under load.
+    const bin = join(home, 'git-shim');
+    mkdirSync(bin);
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+    const log = join(home, 'git-calls.log');
+    writeFileSync(
+      join(bin, 'git'),
+      `#!/bin/sh\necho "$*" >> '${log}'\nsleep ${delaySeconds}\nexec '${realGit}' "$@"\n`,
+      { mode: 0o755 },
+    );
+    return { path: `${bin}:${process.env.PATH}`, log };
+  }
+
+  function writeTestKey(home) {
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
+    );
+  }
+
+  test('looks up the git root once per run', async (t) => {
+    const { repo, home } = makeRepo(t);
+    writeTestKey(home);
+    const shim = gitShim(home, 0);
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ results: [], searchTime: 1 }));
+    });
+    await runHook(
+      'recall-directive.js',
+      { session_id: 's-git-count', cwd: repo, prompt: 'continue the database work from before' },
+      { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url, PATH: shim.path },
+    );
+    const calls = readFileSync(shim.log, 'utf8').trim().split('\n');
+    // One root lookup (common dir, then top level) plus the remote name.
+    assert.ok(calls.length <= 3, calls.join(' | '));
+  });
+
+  test('stays inside the 5 s hook limit when git is slow and search hangs', async (t) => {
+    const { repo, home } = makeRepo(t);
+    writeTestKey(home);
+    const shim = gitShim(home, 0.6);
+    const stub = await startStubServer(t, () => {});
+    const started = Date.now();
+    const { code, stdout } = await runHook(
+      'recall-directive.js',
+      { session_id: 's-slow', cwd: repo, prompt: 'continue the database work from before' },
+      { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url, PATH: shim.path },
+    );
+    const elapsed = Date.now() - started;
+    assert.equal(code, 0);
+    assert.deepEqual(JSON.parse(stdout), { continue: true, suppressOutput: true });
+    // Claude Code kills the hook at 5000 ms and discards its output.
+    assert.ok(elapsed < 4950, `took ${elapsed} ms`);
   });
 
   test('uses hybrid search when recallSearchMode is hybrid', async (t) => {

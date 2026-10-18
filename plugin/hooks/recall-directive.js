@@ -2,7 +2,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { getProfile } = require('./lib/api');
+const { searchNamespace } = require('./lib/api');
 const { BRAND, gray, red } = require('./lib/colors');
 const { getContainerTag } = require('./lib/container-tag');
 const { getUserFriendlyError } = require('./lib/error-helpers');
@@ -36,7 +36,10 @@ const MAX_QUERY_LENGTH = 500;
 const MAX_RESULTS = 5;
 const MAX_RESULT_CHARS = 300;
 const MIN_SIMILARITY = 0.55;
-const SEARCH_TIMEOUT_MS = 4000;
+// Claude Code kills this hook at 5 s, so the search only gets what is left of
+// that budget after node start, config and git lookups.
+const HOOK_BUDGET_MS = 4500;
+const MIN_SEARCH_MS = 500;
 const MAX_SEEN_HASHES = 500;
 
 function shouldSkip(prompt) {
@@ -173,15 +176,22 @@ async function main() {
     }
 
     const containerTag = getContainerTag(cwd);
-    const response = await getProfile(
+    // performance.now() counts from the start of this node process.
+    const searchMs = HOOK_BUDGET_MS - Math.round(performance.now());
+    if (searchMs < MIN_SEARCH_MS) {
+      writeOutput({ continue: true, suppressOutput: true });
+      return;
+    }
+    // Only search hits are injected; the profile call was slower and unused.
+    const searchResults = await searchNamespace(
       getBaseUrl(cwd, projectConfig),
       apiKey,
       containerTag,
       prompt.slice(0, MAX_QUERY_LENGTH),
-      { timeoutMs: SEARCH_TIMEOUT_MS, searchMode },
+      { timeoutMs: searchMs, searchMode },
     );
 
-    const results = (response?.searchResults?.results || [])
+    const results = (searchResults?.results || [])
       .filter((r) => resultText(r))
       .filter((r) => !Number.isFinite(r.similarity) || r.similarity >= MIN_SIMILARITY)
       .slice(0, MAX_RESULTS);

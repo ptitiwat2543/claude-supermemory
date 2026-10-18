@@ -1,7 +1,16 @@
 const { execSync } = require('node:child_process');
 const path = require('node:path');
 
+// Several helpers ask for the root in one hook run; each git call costs a
+// process start, and on WSL a /mnt/c path goes through git.exe.
+const gitRootCache = new Map();
+
 function getGitRoot(cwd) {
+  if (!gitRootCache.has(cwd)) gitRootCache.set(cwd, findGitRoot(cwd));
+  return gitRootCache.get(cwd);
+}
+
+function findGitRoot(cwd) {
   const isolateWorktrees = process.env.SUPERMEMORY_ISOLATE_WORKTREES === 'true';
 
   try {
