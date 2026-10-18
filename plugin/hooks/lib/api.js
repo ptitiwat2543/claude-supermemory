@@ -103,6 +103,28 @@ function namespacePath(namespace) {
   return `/ns/${encodeURIComponent(namespace)}`;
 }
 
+function postSearch(baseUrl, apiKey, namespace, query, options = {}) {
+  return post(
+    baseUrl,
+    apiKey,
+    `${namespacePath(namespace)}/search`,
+    {
+      query,
+      searchMode: options.searchMode === 'hybrid' ? 'hybrid' : 'memories',
+      threshold: 0.6,
+      limit: 10,
+      rerank: 'none',
+      rewriteQuery: false,
+      include: { documents: false, related: false, forgotten: false },
+    },
+    options.timeoutMs ?? REQUEST_TIMEOUT_MS,
+  );
+}
+
+async function searchNamespace(baseUrl, apiKey, namespace, query, options = {}) {
+  return normalizeSearch(await postSearch(baseUrl, apiKey, namespace, query, options));
+}
+
 async function getProfile(baseUrl, apiKey, namespace, query, options = {}) {
   const namespaceRoot = namespacePath(namespace);
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
@@ -114,21 +136,7 @@ async function getProfile(baseUrl, apiKey, namespace, query, options = {}) {
     timeoutMs,
   );
   const searchPromise = typeof query === 'string' && query.trim()
-    ? post(
-      baseUrl,
-      apiKey,
-      `${namespaceRoot}/search`,
-      {
-        query,
-        searchMode: 'memories',
-        threshold: 0.6,
-        limit: 10,
-        rerank: 'none',
-        rewriteQuery: false,
-        include: { documents: false, related: false, forgotten: false },
-      },
-      timeoutMs,
-    )
+    ? postSearch(baseUrl, apiKey, namespace, query, { ...options, timeoutMs })
     : null;
 
   const [profilePayload, searchPayload] = await Promise.all([
@@ -170,4 +178,4 @@ async function addDocument(baseUrl, apiKey, content, namespace, metadata, option
   return result;
 }
 
-module.exports = { AGENT_SUPPORTING_CONTEXT, addDocument, getProfile };
+module.exports = { AGENT_SUPPORTING_CONTEXT, addDocument, getProfile, searchNamespace };

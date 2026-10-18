@@ -144,6 +144,10 @@ function getRecallConfig(cwd) {
   const projectConfig = loadProjectConfig(cwd || process.cwd());
   return {
     directive: projectConfig?.recallDirective || settings.recallDirective || null,
+    searchMode:
+      (projectConfig?.recallSearchMode || settings.recallSearchMode) === 'hybrid'
+        ? 'hybrid'
+        : 'memories',
   };
 }
 

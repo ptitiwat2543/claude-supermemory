@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   utimesSync,
@@ -220,6 +221,7 @@ describe('recall-directive hook', () => {
       JSON.parse(searchRequest.body).query,
       'continue the database work from before',
     );
+    assert.equal(JSON.parse(searchRequest.body).searchMode, 'memories');
 
     const state = readState('s1', {
       dataDir: join(home, '.supermemory-claude', 'statusline'),
@@ -227,6 +229,73 @@ describe('recall-directive hook', () => {
     assert.equal(state.search.count, 1);
     assert.equal(state.search.results, 4);
     assert.equal(state.search.memories, 4);
+  });
+
+  test('uses hybrid search when recallSearchMode is hybrid', async (t) => {
+    const { repo, home } = makeRepo(t);
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
+    );
+    writeFileSync(
+      join(home, '.supermemory-claude', 'settings.json'),
+      JSON.stringify({ recallSearchMode: 'hybrid' }),
+    );
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(record.url.endsWith('/profile')
+        ? { profile: { static: [], dynamic: [], buckets: {} } }
+        : { results: [{ id: 'chunk_1', chunk: 'catch block logs and returns', similarity: 0.8 }], searchTime: 5 }));
+    });
+
+    const { code, stdout } = await runHook(
+      'recall-directive.js',
+      { session_id: 's-hybrid', cwd: repo, prompt: 'what does the catch block do here' },
+      { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url },
+    );
+    assert.equal(code, 0);
+    const searchRequest = stub.requests.find((request) => request.url.endsWith('/search'));
+    const body = JSON.parse(searchRequest.body);
+    assert.equal(body.searchMode, 'hybrid');
+    assert.equal(body.threshold, 0.6);
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /catch block logs and returns/);
+  });
+
+  test('pauses recall after a 402 instead of asking on every prompt', async (t) => {
+    const { repo, home } = makeRepo(t);
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
+    );
+    const stub = await startStubServer(t, (record, res) => {
+      res.statusCode = 402;
+      res.end(JSON.stringify({ error: 'payment required' }));
+    });
+    const env = { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url };
+
+    const first = await runHook(
+      'recall-directive.js',
+      { session_id: 's-limit-1', cwd: repo, prompt: 'continue the database work from before' },
+      env,
+    );
+    assert.equal(first.code, 0);
+    const requestsAfterFirst = stub.requests.length;
+    assert.ok(requestsAfterFirst > 0);
+    const cooldown = JSON.parse(
+      readFileSync(join(home, '.supermemory-claude', 'recall-cooldown.json'), 'utf8'),
+    );
+    assert.equal(cooldown.status, 402);
+    assert.ok(cooldown.until > Date.now());
+
+    const second = await runHook(
+      'recall-directive.js',
+      { session_id: 's-limit-2', cwd: repo, prompt: 'continue the database work from before' },
+      env,
+    );
+    assert.equal(second.code, 0);
+    assert.equal(stub.requests.length, requestsAfterFirst);
   });
 
   test('skips trivial prompts and slash commands without an API call', async (t) => {
@@ -642,6 +711,88 @@ describe('mcp proxy', () => {
     assert.match(stub.requests[0].headers.authorization, /^Bearer sm_test/);
     assert.equal(stub.requests[0].headers['mcp-session-id'], undefined);
     assert.equal(stub.requests[1].headers['mcp-session-id'], 'mcp-sess-9');
+  });
+
+  test('lists search_hybrid with the hosted tools', async (t) => {
+    const home = makeAuthedHome(t);
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      const { id } = JSON.parse(record.body);
+      res.end(JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [{ name: 'search_memory' }] } }));
+    });
+
+    const [message] = await runProxy(
+      t,
+      { HOME: home, USERPROFILE: home, SUPERMEMORY_MCP_URL: `${stub.url}/mcp` },
+      [{ jsonrpc: '2.0', id: 3, method: 'tools/list' }],
+    );
+    assert.deepEqual(message.result.tools.map((tool) => tool.name), ['search_memory', 'search_hybrid']);
+  });
+
+  test('answers search_hybrid locally with a hybrid REST search', async (t) => {
+    const home = makeAuthedHome(t);
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        results: [
+          { id: 'c1', chunk: 'catch block logs and returns', filepath: 'ProcessRun.cs', similarity: 0.71 },
+          { id: 'm1', memory: 'Decision recorded', similarity: 0.65 },
+        ],
+      }));
+    });
+
+    const [message] = await runProxy(
+      t,
+      {
+        HOME: home,
+        USERPROFILE: home,
+        SUPERMEMORY_MCP_URL: `${stub.url}/mcp`,
+        SUPERMEMORY_API_URL: stub.url,
+      },
+      [{
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'search_hybrid', arguments: { query: 'catch block', namespace: 'repo_test' } },
+      }],
+    );
+    assert.equal(stub.requests.length, 1);
+    assert.equal(stub.requests[0].url, '/ns/repo_test/search');
+    const body = JSON.parse(stub.requests[0].body);
+    assert.equal(body.searchMode, 'hybrid');
+    assert.equal(body.threshold, 0.6);
+    assert.equal(body.rerank, 'none');
+    assert.equal(body.rewriteQuery, false);
+    assert.equal(message.result.isError, false);
+    assert.match(message.result.content[0].text, /\[chunk 71%\] catch block logs and returns \(ProcessRun\.cs\)/);
+    assert.match(message.result.content[0].text, /\[memory 65%\] Decision recorded/);
+  });
+
+  test('search_hybrid stops calling after a 402', async (t) => {
+    const home = makeAuthedHome(t);
+    const stub = await startStubServer(t, (record, res) => {
+      res.statusCode = 402;
+      res.end('{}');
+    });
+    const env = {
+      HOME: home,
+      USERPROFILE: home,
+      SUPERMEMORY_MCP_URL: `${stub.url}/mcp`,
+      SUPERMEMORY_API_URL: stub.url,
+    };
+    const call = (id) => ({
+      jsonrpc: '2.0',
+      id,
+      method: 'tools/call',
+      params: { name: 'search_hybrid', arguments: { query: 'anything', namespace: 'repo_test' } },
+    });
+
+    const [first] = await runProxy(t, env, [call(5)]);
+    const [second] = await runProxy(t, env, [call(6)]);
+    assert.equal(first.result.isError, true);
+    assert.equal(second.result.isError, true);
+    assert.match(second.result.content[0].text, /paused after a usage limit/);
+    assert.equal(stub.requests.length, 1);
   });
 
   test('unwraps SSE responses into stdout lines', async (t) => {

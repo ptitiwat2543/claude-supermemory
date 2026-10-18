@@ -8,6 +8,11 @@ const { getContainerTag } = require('./lib/container-tag');
 const { getUserFriendlyError } = require('./lib/error-helpers');
 const { loadProjectConfig } = require('./lib/project-config');
 const {
+  isLimitStatus,
+  recallCoolingDown,
+  startRecallCooldown,
+} = require('./lib/recall-cooldown');
+const {
   loadSettings,
   getApiKey,
   getBaseUrl,
@@ -136,7 +141,7 @@ async function main() {
     const input = await readStdin();
     const cwd = input.cwd || process.cwd();
     const prompt = (input.prompt || '').trim();
-    const { directive } = getRecallConfig(cwd);
+    const { directive, searchMode } = getRecallConfig(cwd);
 
     if (directive) {
       writeOutput({
@@ -162,13 +167,18 @@ async function main() {
       return;
     }
 
+    if (recallCoolingDown()) {
+      writeOutput({ continue: true, suppressOutput: true });
+      return;
+    }
+
     const containerTag = getContainerTag(cwd);
     const response = await getProfile(
       getBaseUrl(cwd, projectConfig),
       apiKey,
       containerTag,
       prompt.slice(0, MAX_QUERY_LENGTH),
-      { timeoutMs: SEARCH_TIMEOUT_MS },
+      { timeoutMs: SEARCH_TIMEOUT_MS, searchMode },
     );
 
     const results = (response?.searchResults?.results || [])
@@ -242,6 +252,7 @@ async function main() {
     });
   } catch (err) {
     debugLog(settings, 'Recall directive error', { error: err.message });
+    if (isLimitStatus(err?.status)) startRecallCooldown(err.status);
     // A slow recall should not interrupt every prompt with an error banner.
     if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
       writeOutput({ continue: true, suppressOutput: true });
