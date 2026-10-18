@@ -1,4 +1,4 @@
-const AGENT_ENTITY_CONTEXT = `Shared coding-agent memory for one software repository.
+const AGENT_SUPPORTING_CONTEXT = `Shared coding-agent memory for one software repository.
 
 RULES:
 - Try to remember things that a human would remember — a teammate recalls decisions and lessons, not what state the working tree was in
@@ -24,6 +24,16 @@ SKIP:
 // hold the session hostage. Requests default to 3s; prompt recall allows 4s.
 // Callers treat failure as "no memory this time", not a blocker.
 const REQUEST_TIMEOUT_MS = 3000;
+const DOCUMENT_STATUSES = new Set([
+  'unknown',
+  'queued',
+  'extracting',
+  'chunking',
+  'embedding',
+  'indexing',
+  'done',
+  'failed',
+]);
 
 async function post(baseUrl, apiKey, path, body, timeoutMs = REQUEST_TIMEOUT_MS) {
   const response = await fetch(`${baseUrl.replace(/\/+$/, '')}${path}`, {
@@ -47,19 +57,117 @@ async function post(baseUrl, apiKey, path, body, timeoutMs = REQUEST_TIMEOUT_MS)
   return response.json();
 }
 
-function getProfile(baseUrl, apiKey, containerTag, query, options = {}) {
-  return post(baseUrl, apiKey, '/v4/profile', { containerTag, q: query }, options.timeoutMs);
+function normalizeFacts(facts, label) {
+  if (!Array.isArray(facts)) throw new Error(`Supermemory profile ${label} must be an array`);
+  return facts.map((fact) => {
+    if (!fact || typeof fact !== 'object' || typeof fact.id !== 'string' || typeof fact.memory !== 'string') {
+      throw new Error(`Supermemory profile ${label} contains a malformed memory`);
+    }
+    return fact.memory;
+  });
 }
 
-function addMemory(baseUrl, apiKey, content, containerTag, metadata, options = {}) {
+function normalizeProfile(payload) {
+  if (!payload || !payload.profile || typeof payload.profile !== 'object') {
+    throw new Error('Supermemory profile response is malformed');
+  }
+  return {
+    ...payload.profile,
+    static: normalizeFacts(payload.profile.static, 'static'),
+    dynamic: normalizeFacts(payload.profile.dynamic, 'dynamic'),
+  };
+}
+
+function normalizeSearch(payload) {
+  if (!payload || !Array.isArray(payload.results)) {
+    throw new Error('Supermemory search response is malformed');
+  }
+  const results = payload.results.map((result) => {
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      typeof result.id !== 'string' ||
+      !(typeof result.memory === 'string' || typeof result.chunk === 'string')
+    ) {
+      throw new Error('Supermemory search response contains a malformed result');
+    }
+    return result;
+  });
+  return { ...payload, results };
+}
+
+function namespacePath(namespace) {
+  if (typeof namespace !== 'string' || !namespace.trim()) {
+    throw new TypeError('Supermemory namespace must be a non-empty string');
+  }
+  return `/ns/${encodeURIComponent(namespace)}`;
+}
+
+async function getProfile(baseUrl, apiKey, namespace, query, options = {}) {
+  const namespaceRoot = namespacePath(namespace);
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const profilePromise = post(
+    baseUrl,
+    apiKey,
+    `${namespaceRoot}/profile`,
+    {},
+    timeoutMs,
+  );
+  const searchPromise = typeof query === 'string' && query.trim()
+    ? post(
+      baseUrl,
+      apiKey,
+      `${namespaceRoot}/search`,
+      {
+        query,
+        searchMode: 'memories',
+        threshold: 0.6,
+        limit: 10,
+        rerank: 'none',
+        rewriteQuery: false,
+        include: { documents: false, related: false, forgotten: false },
+      },
+      timeoutMs,
+    )
+    : null;
+
+  const [profilePayload, searchPayload] = await Promise.all([
+    profilePromise,
+    searchPromise || Promise.resolve(null),
+  ]);
+  const result = { profile: normalizeProfile(profilePayload) };
+  if (searchPayload) result.searchResults = normalizeSearch(searchPayload);
+  return result;
+}
+
+async function addDocument(baseUrl, apiKey, content, namespace, metadata, options = {}) {
+  const namespaceRoot = namespacePath(namespace);
   const body = {
     content,
-    containerTag,
     metadata: { sm_source: 'claude-code', ...metadata },
   };
-  if (options.customId) body.customId = options.customId;
-  if (options.entityContext) body.entityContext = options.entityContext;
-  return post(baseUrl, apiKey, '/v3/documents', body, options.timeoutMs);
+  if (options.id !== undefined) body.id = options.id;
+  if (options.supportingContext !== undefined) body.supportingContext = options.supportingContext;
+
+  const result = await post(
+    baseUrl,
+    apiKey,
+    `${namespaceRoot}/document`,
+    body,
+    options.timeoutMs ?? REQUEST_TIMEOUT_MS,
+  );
+  if (
+    !result ||
+    typeof result.id !== 'string' ||
+    !result.id ||
+    !DOCUMENT_STATUSES.has(result.status)
+  ) {
+    throw new Error('Supermemory document acknowledgement is malformed');
+  }
+  if (result.status === 'failed') {
+    throw new Error(`Supermemory document ${result.id} was accepted with failed status`);
+  }
+  return result;
 }
 
-module.exports = { AGENT_ENTITY_CONTEXT, getProfile, addMemory };
+module.exports = { AGENT_SUPPORTING_CONTEXT, addDocument, getProfile };

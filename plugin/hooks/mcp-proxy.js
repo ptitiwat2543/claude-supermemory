@@ -7,7 +7,25 @@ const MCP_URL =
   process.env.SUPERMEMORY_MCP_URL || 'https://mcp.supermemory.ai/mcp';
 const REQUEST_TIMEOUT_MS = 30000;
 
-const REPO_SCOPED_TOOLS = new Set([
+const NAMESPACE_SCOPED_TOOLS = new Set([
+  'search_memory',
+  'get_profile',
+  'list_documents',
+  'listDocuments',
+  'get_document',
+  'getDocument',
+  'list_memories',
+  'listMemories',
+  'set-active-tag',
+  'memory-graph',
+  'fetch-graph-data',
+  'add_memory',
+  'forget_memory',
+  'save-memory',
+  'prepare-file-upload',
+]);
+
+const LEGACY_CONTAINER_TAG_TOOLS = new Set([
   'search_memory',
   'add_memory',
   'listDocuments',
@@ -19,17 +37,22 @@ const REPO_SCOPED_TOOLS = new Set([
 
 let sessionId = null;
 
-// Hosted MCP omits to activeSpace; default space-scoped calls to this repo instead.
-function injectRepoContainerTag(message, containerTag) {
-  if (!containerTag || message.method !== 'tools/call') return;
+// Default scoped MCP calls to this repository; keep an explicit caller scope.
+function injectRepoScope(message, repoNamespace) {
+  if (!repoNamespace || message.method !== 'tools/call') return;
   const params = message.params;
   if (!params || typeof params !== 'object') return;
-  if (!REPO_SCOPED_TOOLS.has(params.name)) return;
+  const scopeField = NAMESPACE_SCOPED_TOOLS.has(params.name)
+    ? 'namespace'
+    : LEGACY_CONTAINER_TAG_TOOLS.has(params.name)
+      ? 'containerTag'
+      : null;
+  if (!scopeField) return;
 
   let args = params.arguments;
   let encoded = false;
   if (args == null) {
-    params.arguments = { containerTag };
+    params.arguments = { [scopeField]: repoNamespace };
     return;
   }
   if (typeof args === 'string') {
@@ -41,9 +64,11 @@ function injectRepoContainerTag(message, containerTag) {
     }
   }
   if (!args || typeof args !== 'object' || Array.isArray(args)) return;
-  if (typeof args.containerTag === 'string' && args.containerTag.trim()) return;
+  if (['namespace', 'containerTag'].some((field) =>
+    typeof args[field] === 'string' && args[field].trim()
+  )) return;
 
-  args.containerTag = containerTag;
+  args[scopeField] = repoNamespace;
   params.arguments = encoded ? JSON.stringify(args) : args;
 }
 
@@ -145,7 +170,7 @@ async function main() {
         return;
       }
       try {
-        injectRepoContainerTag(message, repoContainerTag);
+        injectRepoScope(message, repoContainerTag);
         await forward(message, apiKey);
       } catch (err) {
         sendError(message.id, -32000, `Supermemory MCP proxy error: ${err.message}`);

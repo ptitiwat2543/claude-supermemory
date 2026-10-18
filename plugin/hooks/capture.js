@@ -1,4 +1,4 @@
-const { addMemory, AGENT_ENTITY_CONTEXT } = require('./lib/api');
+const { addDocument, AGENT_SUPPORTING_CONTEXT } = require('./lib/api');
 const {
   getContainerTag,
   getProjectIdentity,
@@ -84,7 +84,7 @@ async function main() {
 
     writeState(sessionId, 'capture', { status: 'saving', count: captured });
 
-    const result = await addMemory(
+    const result = await addDocument(
       baseUrl,
       apiKey,
       delta.formatted,
@@ -98,8 +98,8 @@ async function main() {
         timestamp: new Date().toISOString(),
       },
       {
-        customId: sessionId,
-        entityContext: AGENT_ENTITY_CONTEXT,
+        id: sessionId,
+        supportingContext: AGENT_SUPPORTING_CONTEXT,
         timeoutMs: CAPTURE_TIMEOUT_MS,
       },
     );

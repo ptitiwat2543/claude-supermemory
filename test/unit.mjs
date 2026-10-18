@@ -15,6 +15,7 @@ import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, test } from 'node:test';
 import { createRequire } from 'node:module';
+import './v5-api.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -179,19 +180,18 @@ describe('recall-directive hook', () => {
     );
     const stub = await startStubServer(t, (record, res) => {
       res.setHeader('Content-Type', 'application/json');
-      res.end(
-        JSON.stringify({
-          searchResults: {
-            results: [
-              { memory: 'Chose Drizzle over Prisma', similarity: 0.82 },
-              { chunk: 'export const db = drizzle(client)', filepath: 'src/db.ts', similarity: 0.74 },
-              { memory: 'Errors must be loud and obvious', similarity: 0.71 },
-              { title: 'Migration plan', content: 'Use expand-contract migrations', similarity: 0.7 },
-              { memory: 'irrelevant low-similarity hit', similarity: 0.2 },
-            ],
-          },
-        }),
-      );
+      res.end(JSON.stringify(record.url.endsWith('/profile')
+        ? { profile: { static: [], dynamic: [], buckets: {} } }
+        : {
+          results: [
+              { id: 'mem_1', memory: 'Chose Drizzle over Prisma', similarity: 0.82 },
+              { id: 'chunk_1', chunk: 'export const db = drizzle(client)', filepath: 'src/db.ts', similarity: 0.74 },
+              { id: 'mem_2', memory: 'Errors must be loud and obvious', similarity: 0.71 },
+              { id: 'mem_3', memory: 'Migration plan — Use expand-contract migrations', similarity: 0.7 },
+              { id: 'mem_4', memory: 'irrelevant low-similarity hit', similarity: 0.2 },
+          ],
+          searchTime: 10,
+        }));
     });
 
     const { code, stdout } = await runHook(
@@ -213,9 +213,11 @@ describe('recall-directive hook', () => {
     assert.match(context, /defaults to this project's container/);
     assert.doesNotMatch(context, /omit containerTag to search the account/i);
     assert.match(plain(output.systemMessage), /^◪ supermemory · recalled \d+ memories \(\d+ tok\)$/);
-    assert.equal(stub.requests[0].url, '/v4/profile');
+    assert.equal(stub.requests.length, 2);
+    const searchRequest = stub.requests.find((request) => request.url.endsWith('/search'));
+    assert.ok(searchRequest);
     assert.equal(
-      JSON.parse(stub.requests[0].body).q,
+      JSON.parse(searchRequest.body).query,
       'continue the database work from before',
     );
 
@@ -254,12 +256,14 @@ describe('recall-directive hook', () => {
       JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
     );
     let hits = [
-      { memory: 'Chose Drizzle over Prisma', similarity: 0.82 },
-      { memory: 'Errors must be loud and obvious', similarity: 0.71 },
+      { id: 'mem_1', memory: 'Chose Drizzle over Prisma', similarity: 0.82 },
+      { id: 'mem_2', memory: 'Errors must be loud and obvious', similarity: 0.71 },
     ];
     const stub = await startStubServer(t, (record, res) => {
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ searchResults: { results: hits } }));
+      res.end(JSON.stringify(record.url.endsWith('/profile')
+        ? { profile: { static: [], dynamic: [], buckets: {} } }
+        : { results: hits, searchTime: 10 }));
     });
     const env = { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url };
     const input = { session_id: 's-dedup', cwd: repo, prompt: 'continue the database work' };
@@ -271,7 +275,7 @@ describe('recall-directive hook', () => {
     assert.equal(second.systemMessage, undefined);
     assert.equal(second.hookSpecificOutput, undefined);
 
-    hits = [...hits, { memory: 'New fact about migrations', similarity: 0.8 }];
+    hits = [...hits, { id: 'mem_3', memory: 'New fact about migrations', similarity: 0.8 }];
     const third = JSON.parse((await runHook('recall-directive.js', input, env)).stdout);
     assert.match(plain(third.systemMessage), /^◪ supermemory · recalled 1 new \(\d+ tok\) · 2 already in context$/);
     assert.match(third.hookSpecificOutput.additionalContext, /New fact about migrations/);
@@ -379,11 +383,15 @@ describe('session-start hook', () => {
     );
     const stub = await startStubServer(t, (record, res) => {
       res.setHeader('Content-Type', 'application/json');
-      res.end(
-        JSON.stringify({
-          profile: { static: ['Uses Bun'], dynamic: ['Working on statusline'] },
-        }),
-      );
+      res.end(JSON.stringify(record.url.endsWith('/profile')
+        ? {
+          profile: {
+            static: [{ id: 'mem_static', memory: 'Uses Bun' }],
+            dynamic: [{ id: 'mem_dynamic', memory: 'Working on statusline' }],
+            buckets: {},
+          },
+        }
+        : { results: [], searchTime: 1 }));
     });
 
     const { code, stdout } = await runHook(
@@ -396,8 +404,9 @@ describe('session-start hook', () => {
     assert.match(output.hookSpecificOutput.additionalContext, /Uses Bun/);
     assert.match(output.hookSpecificOutput.additionalContext, /Working on statusline/);
     assert.match(plain(output.systemMessage), /◪ supermemory · 2 memories loaded for Example\.Project/);
-    assert.equal(stub.requests[0].url, '/v4/profile');
-    assert.match(stub.requests[0].headers.authorization, /^Bearer sm_test/);
+    const profileRequest = stub.requests.find((request) => request.url.endsWith('/profile'));
+    assert.match(profileRequest.url, /^\/ns\/repo_example_project__[^/]+\/profile$/);
+    assert.match(profileRequest.headers.authorization, /^Bearer sm_test/);
 
     const state = readState('sess-1', {
       dataDir: join(home, '.supermemory-claude', 'statusline'),
@@ -533,13 +542,15 @@ describe('capture hook', () => {
     );
     assert.equal(code, 0);
     assert.equal(stub.requests.length, 1);
-    assert.equal(stub.requests[0].url, '/v3/documents');
+    assert.match(stub.requests[0].url, /^\/ns\/repo_example_project__[^/]+\/document$/);
     const body = JSON.parse(stub.requests[0].body);
     assert.match(body.content, /statusline symlink/);
-    assert.match(body.containerTag, /^repo_example_project__/);
     assert.equal(body.metadata.sm_scope, 'personal');
-    assert.equal(body.customId, 'sess-2');
-    assert.match(body.entityContext, /EXTRACT/);
+    assert.equal(body.id, 'sess-2');
+    assert.match(body.supportingContext, /EXTRACT/);
+    assert.equal('containerTag' in body, false);
+    assert.equal('customId' in body, false);
+    assert.equal('entityContext' in body, false);
 
     const state = readState('sess-2', {
       dataDir: join(home, '.supermemory-claude', 'statusline'),
@@ -568,7 +579,7 @@ describe('capture hook', () => {
     const stub = await startStubServer(t, (record, res) => {
       res.statusCode = failing ? 500 : 200;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify(failing ? { error: 'boom' } : { id: 'doc_9' }));
+      res.end(JSON.stringify(failing ? { error: 'boom' } : { id: 'doc_9', status: 'queued' }));
     });
     const env = { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url };
     const input = { session_id: 'sess-retry', cwd: repo, transcript_path: transcript };
@@ -665,7 +676,7 @@ describe('mcp proxy', () => {
     assert.match(messages[0].error.message, /not authenticated/);
   });
 
-  test('injects the repo container tag when MCP tools omit it', async (t) => {
+  test('defaults every live namespace-capable tool to the repository namespace', async (t) => {
     const { repo, home } = makeRepo(t);
     const expected = readTags(repo, home).tag;
     const stub = await startStubServer(t, (record, res) => {
@@ -673,6 +684,23 @@ describe('mcp proxy', () => {
       const { id } = JSON.parse(record.body);
       res.end(JSON.stringify({ jsonrpc: '2.0', id, result: { ok: true } }));
     });
+    const namespaceToolNames = [
+      'search_memory',
+      'get_profile',
+      'list_documents',
+      'listDocuments',
+      'get_document',
+      'getDocument',
+      'list_memories',
+      'listMemories',
+      'set-active-tag',
+      'memory-graph',
+      'fetch-graph-data',
+      'add_memory',
+      'forget_memory',
+      'save-memory',
+      'prepare-file-upload',
+    ];
 
     await runProxy(
       t,
@@ -682,37 +710,27 @@ describe('mcp proxy', () => {
         SUPERMEMORY_CC_API_KEY: 'sm_test_key_0123456789abcdef',
         SUPERMEMORY_MCP_URL: `${stub.url}/mcp`,
       },
-      [
-        {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tools/call',
-          params: { name: 'search_memory', arguments: { query: 'auth' } },
+      namespaceToolNames.map((name, index) => ({
+        jsonrpc: '2.0',
+        id: index + 1,
+        method: 'tools/call',
+        params: {
+          name,
+          ...(name === 'listDocuments' ? {} : { arguments: name === 'search_memory' ? { query: 'auth' } : {} }),
         },
-        {
-          jsonrpc: '2.0',
-          id: 2,
-          method: 'tools/call',
-          params: { name: 'add_memory', arguments: { content: 'remember this' } },
-        },
-        {
-          jsonrpc: '2.0',
-          id: 3,
-          method: 'tools/call',
-          params: { name: 'listDocuments' },
-        },
-      ],
+      })),
       { cwd: repo },
     );
 
     const forwarded = stub.requests.map((r) => JSON.parse(r.body));
-    assert.equal(forwarded[0].params.arguments.containerTag, expected);
-    assert.equal(forwarded[0].params.arguments.query, 'auth');
-    assert.equal(forwarded[1].params.arguments.containerTag, expected);
-    assert.equal(forwarded[2].params.arguments.containerTag, expected);
+    assert.equal(forwarded.length, namespaceToolNames.length);
+    for (const [index, name] of namespaceToolNames.entries()) {
+      assert.equal(forwarded[index].params.arguments.namespace, expected, `${name} should default to the repo namespace`);
+      assert.equal('containerTag' in forwarded[index].params.arguments, false, `${name} should not receive a competing containerTag`);
+    }
   });
 
-  test('keeps an explicit containerTag and does not rewrite unrelated tools', async (t) => {
+  test('preserves explicit scope in object and encoded-string arguments', async (t) => {
     const { repo, home } = makeRepo(t);
     const stub = await startStubServer(t, (record, res) => {
       res.setHeader('Content-Type', 'application/json');
@@ -735,32 +753,62 @@ describe('mcp proxy', () => {
           method: 'tools/call',
           params: {
             name: 'search_memory',
-            arguments: { query: 'auth', containerTag: 'other_space' },
+            arguments: { query: 'auth', namespace: 'explicit_namespace' },
           },
         },
         {
           jsonrpc: '2.0',
           id: 2,
           method: 'tools/call',
-          params: { name: 'set-active-tag', arguments: { containerTag: 'picked' } },
+          params: {
+            name: 'add_memory',
+            arguments: '{"content":"keep scope","namespace":"encoded_namespace"}',
+          },
         },
         {
           jsonrpc: '2.0',
           id: 3,
           method: 'tools/call',
-          params: { name: 'whoAmI' },
+          params: { name: 'listDocuments', arguments: { containerTag: 'explicit_tag' } },
         },
-        { jsonrpc: '2.0', id: 4, method: 'tools/list' },
+        {
+          jsonrpc: '2.0',
+          id: 4,
+          method: 'tools/call',
+          params: {
+            name: 'listMemories',
+            arguments: '{"containerTag":"encoded_tag"}',
+          },
+        },
+        {
+          jsonrpc: '2.0',
+          id: 5,
+          method: 'tools/call',
+          params: {
+            name: 'fetch-graph-data',
+            arguments: { namespace: 'chosen_namespace', containerTag: 'chosen_tag' },
+          },
+        },
+        {
+          jsonrpc: '2.0',
+          id: 6,
+          method: 'tools/call',
+          params: { name: 'whoAmI', arguments: { namespace: 'account_scope' } },
+        },
+        { jsonrpc: '2.0', id: 7, method: 'tools/list' },
       ],
       { cwd: repo },
     );
 
     const forwarded = stub.requests.map((r) => JSON.parse(r.body));
-    assert.equal(forwarded[0].params.arguments.containerTag, 'other_space');
-    assert.equal(forwarded[1].params.arguments.containerTag, 'picked');
-    assert.equal(forwarded[2].params.arguments, undefined);
-    assert.equal(forwarded[3].method, 'tools/list');
-    assert.equal(forwarded[3].params, undefined);
+    assert.deepEqual(forwarded[0].params.arguments, { query: 'auth', namespace: 'explicit_namespace' });
+    assert.equal(forwarded[1].params.arguments, '{"content":"keep scope","namespace":"encoded_namespace"}');
+    assert.deepEqual(forwarded[2].params.arguments, { containerTag: 'explicit_tag' });
+    assert.equal(forwarded[3].params.arguments, '{"containerTag":"encoded_tag"}');
+    assert.deepEqual(forwarded[4].params.arguments, { namespace: 'chosen_namespace', containerTag: 'chosen_tag' });
+    assert.deepEqual(forwarded[5].params.arguments, { namespace: 'account_scope' });
+    assert.equal(forwarded[6].method, 'tools/list');
+    assert.equal(forwarded[6].params, undefined);
   });
 });
 

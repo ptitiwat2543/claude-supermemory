@@ -1,7 +1,7 @@
 {
   "name": "supermemory",
   "displayName": "Supermemory",
-  "version": "0.1.11",
+  "version": "0.1.12-v5.2",
   "description": "Persistent memory across Claude Code sessions using Supermemory",
   "author": {
     "name": "Supermemory",
@@ -9,7 +9,7 @@
   },
   "homepage": "https://supermemory.ai",
   "privacyPolicy": "https://supermemory.ai/privacy/",
-  "repository": "https://github.com/supermemoryai/claude-supermemory",
+  "repository": "https://github.com/ptitiwat2543/claude-supermemory",
   "license": "MIT",
   "keywords": [
     "claude-code",
