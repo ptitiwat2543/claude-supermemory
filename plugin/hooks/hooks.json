@@ -19,7 +19,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/recall-directive.js\"",
-            "timeout": 5
+            "timeout": 15,
+            "async": true
           }
         ]
       }

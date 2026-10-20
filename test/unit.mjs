@@ -273,7 +273,7 @@ describe('recall-directive hook', () => {
     assert.ok(calls.length <= 3, calls.join(' | '));
   });
 
-  test('stays inside the 5 s hook limit when git is slow and search hangs', async (t) => {
+  test('stays inside the 15 s async hook limit when git is slow and search hangs', async (t) => {
     const { repo, home } = makeRepo(t);
     writeTestKey(home);
     const shim = gitShim(home, 0.6);
@@ -287,8 +287,18 @@ describe('recall-directive hook', () => {
     const elapsed = Date.now() - started;
     assert.equal(code, 0);
     assert.deepEqual(JSON.parse(stdout), { continue: true, suppressOutput: true });
-    // Claude Code kills the hook at 5000 ms and discards its output.
-    assert.ok(elapsed < 4950, `took ${elapsed} ms`);
+    // The hook runs async; Claude Code still kills it at 15000 ms and discards its output.
+    assert.ok(elapsed < 14950, `took ${elapsed} ms`);
+  });
+
+  test('runs async so a slow search never delays the prompt', () => {
+    // On 2026-10-20 the search API answered in 3.6-15 s, so a blocking hook made every prompt wait about 4.6 s for nothing.
+    const hooks = JSON.parse(readFileSync(new URL('../plugin/hooks/hooks.json', import.meta.url), 'utf8')).hooks;
+    const recall = hooks.UserPromptSubmit.flatMap((group) => group.hooks)
+      .filter((hook) => hook.command.includes('recall-directive.js'));
+    assert.equal(recall.length, 1);
+    assert.equal(recall[0].async, true);
+    assert.ok(recall[0].timeout >= 15, `timeout ${recall[0].timeout}`);
   });
 
   test('uses hybrid search when recallSearchMode is hybrid', async (t) => {

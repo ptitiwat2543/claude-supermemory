@@ -36,9 +36,10 @@ const MAX_QUERY_LENGTH = 500;
 const MAX_RESULTS = 5;
 const MAX_RESULT_CHARS = 300;
 const MIN_SIMILARITY = 0.55;
-// Claude Code kills this hook at 5 s, so the search only gets what is left of
-// that budget after node start, config and git lookups.
-const HOOK_BUDGET_MS = 4500;
+// The hook runs async (hooks.json), so a slow search never delays the prompt and its
+// context arrives with the next turn. Claude Code still kills it at 15 s, so the search
+// only gets what is left of this budget after node start, config and git lookups.
+const HOOK_BUDGET_MS = 13500;
 const MIN_SEARCH_MS = 500;
 const MAX_SEEN_HASHES = 500;
 
