@@ -17,9 +17,9 @@ const { startAuthFlow, AUTH_BASE_URL } = require('./lib/auth');
 const { getUserFriendlyError } = require('./lib/error-helpers');
 const { LAST_SESSION_FILE } = require('./lib/last-session');
 const {
-  clearRecalled,
   pruneState,
   readCaptureNotice,
+  resetRecallState,
   writeState,
 } = require('./lib/session-state');
 
@@ -155,7 +155,7 @@ async function main() {
     const input = await readStdin();
     sessionId = input.session_id;
     const cwd = getSessionProjectDir(input);
-    if (input.source === 'compact' || input.source === 'clear') clearRecalled(sessionId);
+    resetRecallState(sessionId, input.source);
 
     const statuslineCleanupNotice = removeLegacyStatusline();
     pruneState();

@@ -463,29 +463,33 @@ describe('recall-directive hook', () => {
   });
 
   test('searches a follow-up together with the prompt before it', async (t) => {
-    const { repo, home } = makeRepo(t);
-    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
-    writeFileSync(
-      join(home, '.supermemory-claude', 'credentials.json'),
-      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
-    );
+    const { repo } = makeRepo(t);
+    const home = makeAuthedHome(t);
     const stub = await startStubServer(t, (record, res) => {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ results: [], searchTime: 1 }));
     });
     const env = { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url };
-    const ask = (prompt) => runHook('recall-directive.js', { session_id: 's-follow', cwd: repo, prompt }, env);
+    const ask = (prompt) =>
+      runHook('recall-directive.js', { session_id: 's-follow', cwd: repo, prompt }, env);
 
     await ask('continue the database migration work');
     await ask('/compact keep the plan');
     await ask('ok do all of it now');
     await ask('ok do all of it now');
+    const beforeClear = stub.requests.length;
+    await runHook('session-start.js', { session_id: 's-follow', cwd: repo, source: 'clear' }, env);
+    stub.requests.splice(beforeClear); // session start's own profile lookup
+    await ask('start the release notes');
 
-    const queries = stub.requests.map((request) => JSON.parse(request.body).query);
+    const queries = stub.requests
+      .filter((request) => request.url.endsWith('/search'))
+      .map((request) => JSON.parse(request.body).query);
     assert.deepEqual(queries, [
       'continue the database migration work',
       'ok do all of it now\ncontinue the database migration work',
       'ok do all of it now',
+      'start the release notes',
     ]);
   });
 

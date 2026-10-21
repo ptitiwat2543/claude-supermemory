@@ -20,6 +20,7 @@ const {
   getRecallConfig,
 } = require('./lib/settings');
 const {
+  LAST_PROMPT_FILE,
   RECALLED_FILE,
   atomicWriteJson,
   getSessionDir,
@@ -80,27 +81,21 @@ function readSeenHashes(sessionDir) {
   }
 }
 
-const LAST_PROMPT_FILE = 'last-prompt.json';
+function readLastPrompt(sessionDir) {
+  try {
+    const text = JSON.parse(fs.readFileSync(path.join(sessionDir, LAST_PROMPT_FILE), 'utf8'));
+    return typeof text === 'string' && text.trim() ? text : null;
+  } catch {
+    return null;
+  }
+}
 
-// A follow-up such as "do all of it", or a steer sent mid-turn, names no topic, so the
-// search also carries the prompt before it; the current prompt goes first and keeps the
-// most room. The prompt is saved before the search so a steer sent while this search
-// still runs already sees it.
-function recallQuery(sessionDir, prompt) {
-  const current = prompt.slice(0, MAX_QUERY_LENGTH);
-  if (!sessionDir) return current;
-  let previous = null;
+function saveLastPrompt(sessionDir, text) {
   try {
-    previous = JSON.parse(fs.readFileSync(path.join(sessionDir, LAST_PROMPT_FILE), 'utf8'));
-  } catch {}
-  try {
-    atomicWriteJson(path.join(sessionDir, LAST_PROMPT_FILE), current);
+    atomicWriteJson(path.join(sessionDir, LAST_PROMPT_FILE), text);
   } catch {
     // Context for the next prompt is best effort; this recall still goes through.
   }
-  return typeof previous === 'string' && previous !== current
-    ? `${current}\n${previous}`.slice(0, MAX_QUERY_LENGTH)
-    : current;
 }
 
 // The hook can only inject what it finds. When a project has no stored memories
@@ -186,8 +181,15 @@ async function main() {
       return;
     }
 
+    // A follow-up or a steer sent mid-turn names no topic, so the search also carries the
+    // prompt before it. Saving first lets a steer sent while this search runs see this prompt.
     const sessionDir = getSessionDir(input.session_id);
-    const query = recallQuery(sessionDir, prompt);
+    const current = prompt.slice(0, MAX_QUERY_LENGTH);
+    const previous = sessionDir ? readLastPrompt(sessionDir) : null;
+    if (sessionDir) saveLastPrompt(sessionDir, current);
+    const query = previous && previous !== current
+      ? `${current}\n${previous}`.slice(0, MAX_QUERY_LENGTH)
+      : current;
 
     const projectConfig = loadProjectConfig(cwd);
     let apiKey;

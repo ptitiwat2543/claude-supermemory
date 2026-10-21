@@ -46,14 +46,19 @@ function atomicWriteJson(file, value) {
 }
 
 const RECALLED_FILE = 'recalled.json';
+const LAST_PROMPT_FILE = 'last-prompt.json';
 
-// Compaction and /clear drop earlier recalls from the context, so they may be shown again.
-function clearRecalled(sessionId) {
+// Compaction and /clear drop earlier recalls from the context, so they may be shown again;
+// /clear also ends the conversation the last prompt belonged to.
+function resetRecallState(sessionId, source) {
   const sessionDir = getSessionDir(sessionId);
-  if (!sessionDir) return;
+  if (!sessionDir || (source !== 'compact' && source !== 'clear')) return;
   try {
     atomicWriteJson(path.join(sessionDir, RECALLED_FILE), []);
-  } catch {}
+    if (source === 'clear') atomicWriteJson(path.join(sessionDir, LAST_PROMPT_FILE), null);
+  } catch {
+    // A failed reset only means a repeat stays silent; session start must still go through.
+  }
 }
 
 function normalizeCount(value) {
@@ -182,14 +187,15 @@ function clearCaptureNotice() {
 }
 
 module.exports = {
+  LAST_PROMPT_FILE,
   RECALLED_FILE,
   atomicWriteJson,
   clearCaptureNotice,
-  clearRecalled,
   getSessionDir,
   pruneState,
   readCaptureNotice,
   readState,
+  resetRecallState,
   writeCaptureNotice,
   writeState,
 };
