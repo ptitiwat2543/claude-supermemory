@@ -315,11 +315,19 @@ function formatToolInputCompact(input) {
 
 // Side-agent notes are pasted in as user text and often hold guesses ("probably ..."); memory
 // extraction drops the hedge, so they stay out. Claude's reply that checks them is kept.
-const SIDE_AGENT_NOTE = 'Here is a note offered by a side agent';
+const SIDE_AGENT_NOTE_PREFIX = 'Here is a note offered by a side agent';
+
+// The note is its header line and the quoted (>) lines after it; what the user typed below stays.
+function withoutSideAgentNote(text) {
+  if (!text.startsWith(SIDE_AGENT_NOTE_PREFIX)) return text;
+  const lines = text.split('\n');
+  let i = 1;
+  while (i < lines.length && (!lines[i].trim() || lines[i].trimStart().startsWith('>'))) i++;
+  return lines.slice(i).join('\n').trim();
+}
 
 function cleanUserText(text) {
-  const cleaned = cleanContent(text);
-  return cleaned.startsWith(SIDE_AGENT_NOTE) ? '' : cleaned;
+  return withoutSideAgentNote(cleanContent(text));
 }
 
 function cleanContent(text) {
@@ -430,7 +438,7 @@ function groupEntriesIntoSignalTurns(entries) {
 function getTurnUserText(turn) {
   const texts = [];
   for (const entry of turn.userEntries) {
-    const text = getTextFromEntry(entry);
+    const text = withoutSideAgentNote(getTextFromEntry(entry));
     if (text) texts.push(text);
   }
   return texts.join(' ').toLowerCase();

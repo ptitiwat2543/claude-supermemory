@@ -678,6 +678,19 @@ describe('session-start project container', () => {
   });
 });
 
+describe('signal turn selection', () => {
+  test('a side-agent note does not make its turn a signal turn', () => {
+    const { findSignalTurnIndices } = require('../plugin/hooks/lib/transcript.js');
+    const turns = groupEntriesIntoTurns([
+      { type: 'user', uuid: 'u1', message: { content: 'Here is a note offered by a side agent:\n\n> the bug is probably back' } },
+      { type: 'assistant', uuid: 'a1', message: { content: [{ type: 'text', text: 'Checked it.' }] } },
+      { type: 'user', uuid: 'u2', message: { content: 'please fix the bug' } },
+      { type: 'assistant', uuid: 'a2', message: { content: [{ type: 'text', text: 'Fixed.' }] } },
+    ]);
+    assert.deepEqual(findSignalTurnIndices(turns, ['bug']), [1]);
+  });
+});
+
 describe('transcript turn boundaries', () => {
   const prompt = { type: 'user', uuid: 'u1', message: { content: 'Opening prompt' } };
   const toolUse = {
@@ -901,11 +914,12 @@ describe('capture hook', () => {
       const home = makeAuthedHome(t);
       writeFileSync(join(home, '.supermemory-claude', 'settings.json'), JSON.stringify(settings));
       const transcript = join(makeTempDir(t, 'note'), 'session.jsonl');
-      const note = 'Here is a note offered by a side agent:\n\n> Heads up · the export bug is probably back.';
+      const note = 'Here is a note offered by a side agent:\n\n> Heads up - the export bug\n> is probably back.';
       writeFileSync(transcript, [
         { type: 'user', uuid: 'u1', timestamp: '2026-10-21T11:00:00Z', message: { content: note } },
         { type: 'attachment', uuid: 'q1', timestamp: '2026-10-21T11:00:03Z',
-          attachment: { type: 'queued_command', prompt: `${note} Fix it too.`, origin: { kind: 'human' } } },
+          attachment: { type: 'queued_command', prompt: `${note}\n\nAlso fix the old file names.`,
+            origin: { kind: 'human' } } },
         { type: 'assistant', uuid: 'a1', message: { content: [
           { type: 'text', text: 'Checked: the export bug is fixed and stays fixed.' },
         ] } },
@@ -924,6 +938,8 @@ describe('capture hook', () => {
       assert.equal(stub.requests.length, 1);
       const { content } = JSON.parse(stub.requests[0].body);
       assert.ok(content.includes('Checked: the export bug is fixed and stays fixed.'));
+      // What the user typed after the quoted note is theirs and stays.
+      assert.ok(content.includes('<|start|>user<|message|>Also fix the old file names.<|end|>'));
       assert.doesNotMatch(content, /side agent|Heads up|probably back/);
     });
   }
