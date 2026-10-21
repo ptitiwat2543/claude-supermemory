@@ -6,7 +6,7 @@ const { searchNamespace } = require('./lib/api');
 const { BRAND, gray, red } = require('./lib/colors');
 const { getContainerTag } = require('./lib/container-tag');
 const { getUserFriendlyError } = require('./lib/error-helpers');
-const { loadProjectConfig } = require('./lib/project-config');
+const { getSessionProjectDir, loadProjectConfig } = require('./lib/project-config');
 const {
   isLimitStatus,
   recallCoolingDown,
@@ -20,6 +20,7 @@ const {
   getRecallConfig,
 } = require('./lib/settings');
 const {
+  RECALLED_FILE,
   atomicWriteJson,
   getSessionDir,
   readState,
@@ -69,7 +70,7 @@ function hashText(text) {
 function readSeenHashes(sessionDir) {
   try {
     const list = JSON.parse(
-      fs.readFileSync(path.join(sessionDir, 'recalled.json'), 'utf8'),
+      fs.readFileSync(path.join(sessionDir, RECALLED_FILE), 'utf8'),
     );
     return Array.isArray(list)
       ? list.filter((h) => typeof h === 'string')
@@ -77,6 +78,29 @@ function readSeenHashes(sessionDir) {
   } catch {
     return [];
   }
+}
+
+const LAST_PROMPT_FILE = 'last-prompt.json';
+
+// A follow-up such as "do all of it", or a steer sent mid-turn, names no topic, so the
+// search also carries the prompt before it; the current prompt goes first and keeps the
+// most room. The prompt is saved before the search so a steer sent while this search
+// still runs already sees it.
+function recallQuery(sessionDir, prompt) {
+  const current = prompt.slice(0, MAX_QUERY_LENGTH);
+  if (!sessionDir) return current;
+  let previous = null;
+  try {
+    previous = JSON.parse(fs.readFileSync(path.join(sessionDir, LAST_PROMPT_FILE), 'utf8'));
+  } catch {}
+  try {
+    atomicWriteJson(path.join(sessionDir, LAST_PROMPT_FILE), current);
+  } catch {
+    // Context for the next prompt is best effort; this recall still goes through.
+  }
+  return typeof previous === 'string' && previous !== current
+    ? `${current}\n${previous}`.slice(0, MAX_QUERY_LENGTH)
+    : current;
 }
 
 // The hook can only inject what it finds. When a project has no stored memories
@@ -143,7 +167,7 @@ async function main() {
 
   try {
     const input = await readStdin();
-    const cwd = input.cwd || process.cwd();
+    const cwd = getSessionProjectDir(input);
     const prompt = (input.prompt || '').trim();
     const { directive, searchMode } = getRecallConfig(cwd);
 
@@ -161,6 +185,9 @@ async function main() {
       writeOutput({ continue: true, suppressOutput: true });
       return;
     }
+
+    const sessionDir = getSessionDir(input.session_id);
+    const query = recallQuery(sessionDir, prompt);
 
     const projectConfig = loadProjectConfig(cwd);
     let apiKey;
@@ -188,7 +215,7 @@ async function main() {
       getBaseUrl(cwd, projectConfig),
       apiKey,
       containerTag,
-      prompt.slice(0, MAX_QUERY_LENGTH),
+      query,
       { timeoutMs: searchMs, searchMode },
     );
 
@@ -197,7 +224,6 @@ async function main() {
       .filter((r) => !Number.isFinite(r.similarity) || r.similarity >= MIN_SIMILARITY)
       .slice(0, MAX_RESULTS);
 
-    const sessionDir = getSessionDir(input.session_id);
     const seen = sessionDir ? readSeenHashes(sessionDir) : [];
     const seenSet = new Set(seen);
     const fresh = results.filter((r) => !seenSet.has(hashText(resultText(r))));
@@ -240,7 +266,7 @@ async function main() {
     if (sessionDir) {
       try {
         atomicWriteJson(
-          path.join(sessionDir, 'recalled.json'),
+          path.join(sessionDir, RECALLED_FILE),
           [...seen, ...fresh.map((r) => hashText(resultText(r)))].slice(-MAX_SEEN_HASHES),
         );
       } catch {

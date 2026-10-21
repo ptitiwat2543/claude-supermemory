@@ -4,7 +4,7 @@ const {
   getProjectIdentity,
   getProjectName,
 } = require('./lib/container-tag');
-const { loadProjectConfig } = require('./lib/project-config');
+const { getSessionProjectDir, loadProjectConfig } = require('./lib/project-config');
 const {
   loadSettings,
   getApiKey,
@@ -36,7 +36,7 @@ async function main() {
 
   try {
     const input = await readStdin();
-    const cwd = input.cwd || process.cwd();
+    const cwd = getSessionProjectDir(input);
     sessionId = input.session_id;
     const transcriptPath = input.transcript_path;
     const projectConfig = loadProjectConfig(cwd);

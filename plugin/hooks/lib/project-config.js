@@ -21,6 +21,13 @@ function loadProjectConfig(cwd) {
   return null;
 }
 
+// Memories belong to the session's project. A hook's cwd follows every `cd` the session
+// runs, so it would read and write another repository's container; Claude Code exports
+// the project root to hooks as CLAUDE_PROJECT_DIR.
+function getSessionProjectDir(input) {
+  return process.env.CLAUDE_PROJECT_DIR || input?.cwd || process.cwd();
+}
+
 function saveProjectConfig(cwd, config) {
   const gitRoot = getGitRoot(cwd);
   const basePath = gitRoot || cwd;
@@ -42,6 +49,7 @@ function saveProjectConfig(cwd, config) {
 
 module.exports = {
   getConfigPath,
+  getSessionProjectDir,
   loadProjectConfig,
   saveProjectConfig,
 };

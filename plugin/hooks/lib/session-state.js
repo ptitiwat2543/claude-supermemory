@@ -45,6 +45,17 @@ function atomicWriteJson(file, value) {
   }
 }
 
+const RECALLED_FILE = 'recalled.json';
+
+// Compaction and /clear drop earlier recalls from the context, so they may be shown again.
+function clearRecalled(sessionId) {
+  const sessionDir = getSessionDir(sessionId);
+  if (!sessionDir) return;
+  try {
+    atomicWriteJson(path.join(sessionDir, RECALLED_FILE), []);
+  } catch {}
+}
+
 function normalizeCount(value) {
   const count = Number(value);
   if (!Number.isFinite(count)) return 0;
@@ -171,8 +182,10 @@ function clearCaptureNotice() {
 }
 
 module.exports = {
+  RECALLED_FILE,
   atomicWriteJson,
   clearCaptureNotice,
+  clearRecalled,
   getSessionDir,
   pruneState,
   readCaptureNotice,

@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { getProfile } = require('./lib/api');
 const { getContainerTag, getProjectName } = require('./lib/container-tag');
-const { loadProjectConfig } = require('./lib/project-config');
+const { getSessionProjectDir, loadProjectConfig } = require('./lib/project-config');
 const {
   loadSettings,
   getApiKey,
@@ -16,7 +16,12 @@ const { readStdin, writeOutput } = require('./lib/stdin');
 const { startAuthFlow, AUTH_BASE_URL } = require('./lib/auth');
 const { getUserFriendlyError } = require('./lib/error-helpers');
 const { LAST_SESSION_FILE } = require('./lib/last-session');
-const { pruneState, readCaptureNotice, writeState } = require('./lib/session-state');
+const {
+  clearRecalled,
+  pruneState,
+  readCaptureNotice,
+  writeState,
+} = require('./lib/session-state');
 
 const STATUSLINE_INSTALLED_FILE = path.join(
   os.homedir(),
@@ -149,7 +154,8 @@ async function main() {
   try {
     const input = await readStdin();
     sessionId = input.session_id;
-    const cwd = input.cwd || process.cwd();
+    const cwd = getSessionProjectDir(input);
+    if (input.source === 'compact' || input.source === 'clear') clearRecalled(sessionId);
 
     const statuslineCleanupNotice = removeLegacyStatusline();
     pruneState();

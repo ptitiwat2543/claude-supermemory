@@ -95,9 +95,11 @@ function readTags(cwd, home) {
 }
 
 function runHook(name, input, env = {}) {
+  // Claude Code exports CLAUDE_PROJECT_DIR to hooks; a test sets it only when it means to.
+  const { CLAUDE_PROJECT_DIR: _inherited, ...base } = process.env;
   return new Promise((resolve, reject) => {
     const child = spawn('node', [join(HOOKS_DIR, name)], {
-      env: { ...process.env, ...env },
+      env: { ...base, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -133,6 +135,13 @@ function startStubServer(t, handler) {
       resolve({ url: `http://127.0.0.1:${server.address().port}`, requests });
     });
   });
+}
+
+// A second repository the session shell can cd into, with its own remote and so its own container.
+function makeOtherRepo(t) {
+  const other = makeRepo(t, 'Other Repo');
+  other.git(['remote', 'set-url', 'origin', 'git@github.com:acme/Other.Repo.git']);
+  return other.repo;
 }
 
 function makeAuthedHome(t, apiKey = 'sm_test_key_0123456789abcdef') {
@@ -428,6 +437,92 @@ describe('recall-directive hook', () => {
     assert.equal(state.search.memories, 3);
   });
 
+  test('searches the session project container after the shell moves into another repo', async (t) => {
+    const { repo, home } = makeRepo(t);
+    const other = makeOtherRepo(t);
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
+    );
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ results: [], searchTime: 1 }));
+    });
+
+    const { code } = await runHook(
+      'recall-directive.js',
+      { session_id: 's-project', cwd: other, prompt: 'continue the database work from before' },
+      { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url, CLAUDE_PROJECT_DIR: repo },
+    );
+    assert.equal(code, 0);
+    const projectTag = readTags(repo, home).tag;
+    assert.notEqual(readTags(other, home).tag, projectTag);
+    assert.equal(stub.requests.length, 1);
+    assert.equal(stub.requests[0].url, `/ns/${projectTag}/search`);
+  });
+
+  test('searches a follow-up together with the prompt before it', async (t) => {
+    const { repo, home } = makeRepo(t);
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
+    );
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ results: [], searchTime: 1 }));
+    });
+    const env = { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url };
+    const ask = (prompt) => runHook('recall-directive.js', { session_id: 's-follow', cwd: repo, prompt }, env);
+
+    await ask('continue the database migration work');
+    await ask('/compact keep the plan');
+    await ask('ok do all of it now');
+    await ask('ok do all of it now');
+
+    const queries = stub.requests.map((request) => JSON.parse(request.body).query);
+    assert.deepEqual(queries, [
+      'continue the database migration work',
+      'ok do all of it now\ncontinue the database migration work',
+      'ok do all of it now',
+    ]);
+  });
+
+  test('shows earlier recalls again after compaction or /clear', async (t) => {
+    const { repo, home } = makeRepo(t);
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
+    );
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(record.url.endsWith('/profile')
+        ? { profile: { static: [], dynamic: [], buckets: {} } }
+        : { results: [{ id: 'mem_1', memory: 'Chose Drizzle over Prisma', similarity: 0.82 }], searchTime: 1 }));
+    });
+    const env = { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url };
+    const recall = async () => JSON.parse((await runHook(
+      'recall-directive.js',
+      { session_id: 's-compact', cwd: repo, prompt: 'continue the database work' },
+      env,
+    )).stdout);
+
+    assert.match((await recall()).hookSpecificOutput.additionalContext, /Chose Drizzle over Prisma/);
+    assert.equal((await recall()).hookSpecificOutput, undefined);
+    for (const source of ['resume', 'compact', 'clear']) {
+      await runHook('session-start.js', { session_id: 's-compact', cwd: repo, source }, env);
+      const output = await recall();
+      if (source === 'resume') {
+        // A resumed conversation still holds what it was shown.
+        assert.equal(output.hookSpecificOutput, undefined);
+      } else {
+        assert.match(output.hookSpecificOutput.additionalContext, /Chose Drizzle over Prisma/, source);
+      }
+    }
+  });
+
   test('a configured recallDirective restores advisory mode verbatim', async (t) => {
     const { repo, git, home } = makeRepo(t);
     const configDir = join(git(['rev-parse', '--show-toplevel']), '.claude', '.supermemory-claude');
@@ -552,6 +647,30 @@ describe('session-start hook', () => {
     });
     assert.equal(state.context.status, 'ready');
     assert.equal(state.context.memoryItemsLoaded, 2);
+  });
+});
+
+describe('session-start project container', () => {
+  test('loads the session project container when the shell is in another repo', async (t) => {
+    const { repo, home } = makeRepo(t);
+    const other = makeOtherRepo(t);
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
+    );
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ profile: { static: [], dynamic: [], buckets: {} } }));
+    });
+
+    const { code } = await runHook(
+      'session-start.js',
+      { session_id: 'sess-project', cwd: other, source: 'compact' },
+      { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url, CLAUDE_PROJECT_DIR: repo },
+    );
+    assert.equal(code, 0);
+    assert.equal(stub.requests[0].url, `/ns/${readTags(repo, home).tag}/profile`);
   });
 });
 
@@ -695,6 +814,36 @@ describe('capture hook', () => {
       dataDir: join(home, '.supermemory-claude', 'statusline'),
     });
     assert.equal(state.capture.status, 'saved');
+  });
+
+  test('saves into the session project container after the shell moves into another repo', async (t) => {
+    const { repo, home } = makeRepo(t);
+    const other = makeOtherRepo(t);
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
+    );
+    const transcript = join(makeTempDir(t, 'project-dir'), 'session.jsonl');
+    writeFileSync(transcript, [
+      JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-10-21T10:00:00Z',
+        message: { content: 'Please check the migration notes in the other repository' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1',
+        message: { content: [{ type: 'text', text: 'Checked: the notes match.' }] } }),
+    ].join('\n'));
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ id: 'doc_project', status: 'queued' }));
+    });
+
+    const { code } = await runHook(
+      'capture.js',
+      { session_id: 'sess-project', cwd: other, transcript_path: transcript },
+      { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url, CLAUDE_PROJECT_DIR: repo },
+    );
+    assert.equal(code, 0);
+    assert.equal(stub.requests.length, 1);
+    assert.equal(stub.requests[0].url, `/ns/${readTags(repo, home).tag}/document`);
   });
 
   test('a failed save does not advance the cursor; the retry recaptures (issue #96)', async (t) => {
