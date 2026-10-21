@@ -858,6 +858,9 @@ describe('capture hook', () => {
       type: 'attachment', uuid, timestamp: '2026-10-21T10:00:05Z',
       attachment: { type: 'queued_command', prompt, origin: { kind } },
     });
+    // Older Claude Code versions mark a typed message with humanTurn only.
+    const legacy = { type: 'attachment', uuid: 'q3', timestamp: '2026-10-21T10:00:07Z',
+      attachment: { type: 'queued_command', prompt: 'and update the readme', humanTurn: true } };
     writeFileSync(transcript, [
       { type: 'user', uuid: 'u1', timestamp: '2026-10-21T10:00:00Z',
         message: { content: 'Refactor the export module' } },
@@ -866,6 +869,7 @@ describe('capture hook', () => {
       ] } },
       queued('q1', 'also keep the old file names', 'human'),
       queued('q2', '<task-notification>build finished</task-notification>', 'task-notification'),
+      legacy,
       { type: 'assistant', uuid: 'a2', message: { content: [
         { type: 'text', text: 'Done, the old file names stay.' },
       ] } },
@@ -883,7 +887,10 @@ describe('capture hook', () => {
     assert.equal(code, 0);
     assert.equal(stub.requests.length, 1);
     const { content } = JSON.parse(stub.requests[0].body);
+    // A steer belongs to the running turn, so the first save still carries the turn's prompt.
+    assert.ok(content.includes('<|start|>user<|message|>Refactor the export module<|end|>'));
     assert.ok(content.includes('<|start|>user<|message|>also keep the old file names<|end|>'));
+    assert.ok(content.includes('<|start|>user<|message|>and update the readme<|end|>'));
     assert.ok(content.includes('Done, the old file names stay.'));
     assert.doesNotMatch(content, /task-notification|build finished/);
   });

@@ -103,7 +103,7 @@ function prepareCapture(transcriptPath, sessionId, lastAssistantMessage) {
     if (reply.afterUuid && anchor === -1) return true;
     const candidates = entries.slice(anchor + 1);
     for (const entry of candidates) {
-      if (reply.afterUuid && entry.type === 'user' && hasTextContent(entry))
+      if (reply.afterUuid && entry.type === 'user' && !entry.steer && hasTextContent(entry))
         break;
       if (
         entry.type === 'assistant' &&
@@ -145,16 +145,19 @@ function prepareCapture(transcriptPath, sessionId, lastAssistantMessage) {
   return { newEntries: uncapturedEntries, lastUuid, pendingReplies };
 }
 
-// A message typed while Claude works is stored as a queued_command attachment, not as a
-// user entry, so without this it never reaches memory. Task notifications stay out.
-function asUserEntry(entry) {
+// A message typed while Claude works (a steer) is stored as a queued_command attachment, so
+// it becomes a user entry here; other entries, task notifications included, pass unchanged.
+// It belongs to the running turn, so turn grouping must not start a new turn at it.
+function steerAsUserEntry(entry) {
   const queued = entry?.type === 'attachment' ? entry.attachment : null;
-  if (queued?.type !== 'queued_command' || queued.origin?.kind !== 'human') return entry;
-  if (typeof queued.prompt !== 'string' && !Array.isArray(queued.prompt)) return entry;
+  if (queued?.type !== 'queued_command') return entry;
+  const human = queued.origin ? queued.origin.kind === 'human' : queued.humanTurn === true;
+  if (!human || (typeof queued.prompt !== 'string' && !Array.isArray(queued.prompt))) return entry;
   return {
     type: 'user',
     uuid: entry.uuid,
     timestamp: entry.timestamp || queued.timestamp,
+    steer: true,
     message: { role: 'user', content: queued.prompt },
   };
 }
@@ -171,7 +174,7 @@ function parseTranscript(transcriptPath) {
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
-      entries.push(asUserEntry(JSON.parse(line)));
+      entries.push(steerAsUserEntry(JSON.parse(line)));
     } catch {}
   }
 
@@ -359,7 +362,7 @@ function groupEntriesIntoTurns(entries) {
     const entry = entries[i];
 
     if (entry.type === 'user') {
-      if (hasTextContent(entry) && currentTurn.assistantEntries.length > 0) {
+      if (!entry.steer && hasTextContent(entry) && currentTurn.assistantEntries.length > 0) {
         turns.push(currentTurn);
         currentTurn = { userEntries: [], assistantEntries: [], allEntries: [] };
       }
@@ -401,7 +404,7 @@ function groupEntriesIntoSignalTurns(entries) {
     if (!hasTextContent(entry)) continue;
 
     if (entry.type === 'user') {
-      if (lastAssistantEntry) {
+      if (lastAssistantEntry && !entry.steer) {
         pushTurn();
       }
       currentTurn.userEntries.push(entry);
