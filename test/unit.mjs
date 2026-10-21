@@ -850,6 +850,44 @@ describe('capture hook', () => {
     assert.equal(stub.requests[0].url, `/ns/${readTags(repo, home).tag}/document`);
   });
 
+  test('saves a message typed while Claude works and skips task notifications', async (t) => {
+    const { repo } = makeRepo(t);
+    const home = makeAuthedHome(t);
+    const transcript = join(makeTempDir(t, 'steer'), 'session.jsonl');
+    const queued = (uuid, prompt, kind) => ({
+      type: 'attachment', uuid, timestamp: '2026-10-21T10:00:05Z',
+      attachment: { type: 'queued_command', prompt, origin: { kind } },
+    });
+    writeFileSync(transcript, [
+      { type: 'user', uuid: 'u1', timestamp: '2026-10-21T10:00:00Z',
+        message: { content: 'Refactor the export module' } },
+      { type: 'assistant', uuid: 'a1', message: { content: [
+        { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'export.js' } },
+      ] } },
+      queued('q1', 'also keep the old file names', 'human'),
+      queued('q2', '<task-notification>build finished</task-notification>', 'task-notification'),
+      { type: 'assistant', uuid: 'a2', message: { content: [
+        { type: 'text', text: 'Done, the old file names stay.' },
+      ] } },
+    ].map((entry) => JSON.stringify(entry)).join('\n'));
+    const stub = await startStubServer(t, (record, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ id: 'doc_steer', status: 'queued' }));
+    });
+
+    const { code } = await runHook(
+      'capture.js',
+      { session_id: 'steer-save', cwd: repo, transcript_path: transcript },
+      { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url },
+    );
+    assert.equal(code, 0);
+    assert.equal(stub.requests.length, 1);
+    const { content } = JSON.parse(stub.requests[0].body);
+    assert.ok(content.includes('<|start|>user<|message|>also keep the old file names<|end|>'));
+    assert.ok(content.includes('Done, the old file names stay.'));
+    assert.doesNotMatch(content, /task-notification|build finished/);
+  });
+
   test('a failed save does not advance the cursor; the retry recaptures (issue #96)', async (t) => {
     const { repo, home } = makeRepo(t);
     mkdirSync(join(home, '.supermemory-claude'), { recursive: true });

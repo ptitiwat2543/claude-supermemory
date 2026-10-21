@@ -145,6 +145,20 @@ function prepareCapture(transcriptPath, sessionId, lastAssistantMessage) {
   return { newEntries: uncapturedEntries, lastUuid, pendingReplies };
 }
 
+// A message typed while Claude works is stored as a queued_command attachment, not as a
+// user entry, so without this it never reaches memory. Task notifications stay out.
+function asUserEntry(entry) {
+  const queued = entry?.type === 'attachment' ? entry.attachment : null;
+  if (queued?.type !== 'queued_command' || queued.origin?.kind !== 'human') return entry;
+  if (typeof queued.prompt !== 'string' && !Array.isArray(queued.prompt)) return entry;
+  return {
+    type: 'user',
+    uuid: entry.uuid,
+    timestamp: entry.timestamp || queued.timestamp,
+    message: { role: 'user', content: queued.prompt },
+  };
+}
+
 function parseTranscript(transcriptPath) {
   if (!fs.existsSync(transcriptPath)) {
     return [];
@@ -157,7 +171,7 @@ function parseTranscript(transcriptPath) {
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
-      entries.push(JSON.parse(line));
+      entries.push(asUserEntry(JSON.parse(line)));
     } catch {}
   }
 
