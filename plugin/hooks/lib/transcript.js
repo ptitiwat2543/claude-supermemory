@@ -228,14 +228,14 @@ function formatUserMessage(message) {
   const parts = [];
 
   if (typeof content === 'string') {
-    const cleaned = cleanContent(content);
+    const cleaned = cleanUserText(content);
     if (cleaned) {
       parts.push(`<|start|>user<|message|>${cleaned}<|end|>`);
     }
   } else if (Array.isArray(content)) {
     for (const block of content) {
       if (block.type === 'text' && block.text) {
-        const cleaned = cleanContent(block.text);
+        const cleaned = cleanUserText(block.text);
         if (cleaned) {
           parts.push(`<|start|>user<|message|>${cleaned}<|end|>`);
         }
@@ -311,6 +311,15 @@ function formatToolInputCompact(input) {
     parts.push(`${key}="${valueStr}"`);
   }
   return parts.join(' ');
+}
+
+// Side-agent notes are pasted in as user text and often hold guesses ("probably ..."); memory
+// extraction drops the hedge, so they stay out. Claude's reply that checks them is kept.
+const SIDE_AGENT_NOTE = 'Here is a note offered by a side agent';
+
+function cleanUserText(text) {
+  const cleaned = cleanContent(text);
+  return cleaned.startsWith(SIDE_AGENT_NOTE) ? '' : cleaned;
 }
 
 function cleanContent(text) {
@@ -480,14 +489,14 @@ function formatUserMessageTextOnly(message) {
   const parts = [];
 
   if (typeof content === 'string') {
-    const cleaned = cleanContent(content);
+    const cleaned = cleanUserText(content);
     if (cleaned) {
       parts.push(`<|start|>user<|message|>${cleaned}<|end|>`);
     }
   } else if (Array.isArray(content)) {
     for (const block of content) {
       if (block.type === 'text' && block.text) {
-        const cleaned = cleanContent(block.text);
+        const cleaned = cleanUserText(block.text);
         if (cleaned) {
           parts.push(`<|start|>user<|message|>${cleaned}<|end|>`);
         }

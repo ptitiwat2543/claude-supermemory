@@ -895,6 +895,39 @@ describe('capture hook', () => {
     assert.doesNotMatch(content, /task-notification|build finished/);
   });
 
+  for (const settings of [{}, { signalExtraction: true }]) {
+    test(`leaves side-agent notes out but keeps the reply that checks them (${JSON.stringify(settings)})`, async (t) => {
+      const { repo } = makeRepo(t);
+      const home = makeAuthedHome(t);
+      writeFileSync(join(home, '.supermemory-claude', 'settings.json'), JSON.stringify(settings));
+      const transcript = join(makeTempDir(t, 'note'), 'session.jsonl');
+      const note = 'Here is a note offered by a side agent:\n\n> Heads up · the export bug is probably back.';
+      writeFileSync(transcript, [
+        { type: 'user', uuid: 'u1', timestamp: '2026-10-21T11:00:00Z', message: { content: note } },
+        { type: 'attachment', uuid: 'q1', timestamp: '2026-10-21T11:00:03Z',
+          attachment: { type: 'queued_command', prompt: `${note} Fix it too.`, origin: { kind: 'human' } } },
+        { type: 'assistant', uuid: 'a1', message: { content: [
+          { type: 'text', text: 'Checked: the export bug is fixed and stays fixed.' },
+        ] } },
+      ].map((entry) => JSON.stringify(entry)).join('\n'));
+      const stub = await startStubServer(t, (record, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ id: 'doc_note', status: 'queued' }));
+      });
+
+      const { code } = await runHook(
+        'capture.js',
+        { session_id: 'note-skip', cwd: repo, transcript_path: transcript },
+        { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url },
+      );
+      assert.equal(code, 0);
+      assert.equal(stub.requests.length, 1);
+      const { content } = JSON.parse(stub.requests[0].body);
+      assert.ok(content.includes('Checked: the export bug is fixed and stays fixed.'));
+      assert.doesNotMatch(content, /side agent|Heads up|probably back/);
+    });
+  }
+
   test('a failed save does not advance the cursor; the retry recaptures (issue #96)', async (t) => {
     const { repo, home } = makeRepo(t);
     mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
