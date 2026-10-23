@@ -396,6 +396,25 @@ describe('recall-directive hook', () => {
     assert.equal(stub.requests.length, 0);
   });
 
+  test('skips task notifications the harness sends as prompts without an API call', async (t) => {
+    const { repo, home } = makeRepo(t);
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({ apiKey: 'sm_test_key_0123456789abcdef' }),
+    );
+    const stub = await startStubServer(t, (record, res) => res.end('{}'));
+    const prompt = '<task-notification>\n<task-id>b9adnlgml</task-id>\n<summary>Monitor event: "alerts of the Codex WSL hooks"</summary>\n' +
+      '<event>[Monitor expired after 30m with no events delivered. Re-arm it if you still need the watch.]</event>\n</task-notification>';
+    const { stdout } = await runHook(
+      'recall-directive.js',
+      { session_id: 's1', cwd: repo, prompt },
+      { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url },
+    );
+    assert.equal(JSON.parse(stdout).hookSpecificOutput, undefined);
+    assert.equal(stub.requests.length, 0);
+  });
+
   test('dedupes across the session: repeats go silent, mixes are labeled', async (t) => {
     const { repo, home } = makeRepo(t);
     mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
@@ -907,6 +926,41 @@ describe('capture hook', () => {
     assert.ok(content.includes('Done, the old file names stay.'));
     assert.doesNotMatch(content, /task-notification|build finished/);
   });
+
+  for (const settings of [{}, { signalExtraction: true }]) {
+    test(`leaves out task notifications and skill text that Claude Code sends as user entries (${JSON.stringify(settings)})`, async (t) => {
+      const { repo } = makeRepo(t);
+      const home = makeAuthedHome(t);
+      writeFileSync(join(home, '.supermemory-claude', 'settings.json'), JSON.stringify(settings));
+      const transcript = join(makeTempDir(t, 'harness'), 'session.jsonl');
+      writeFileSync(transcript, [
+        { type: 'user', uuid: 'u1', origin: { kind: 'human' }, promptSource: 'typed',
+          message: { content: 'Remember to refactor the export module' } },
+        { type: 'assistant', uuid: 'a1', message: { content: [{ type: 'text', text: 'Working on the export module.' }] } },
+        { type: 'user', uuid: 'n1', origin: { kind: 'task-notification' }, promptSource: 'system',
+          message: { content: '<task-notification>\n<task-id>b9</task-id>\n<event>Remember: Monitor expired after 30m</event>\n</task-notification>' } },
+        { type: 'assistant', uuid: 'a2', message: { content: [{ type: 'text', text: 'Re-armed the watch.' }] } },
+        { type: 'user', uuid: 'm1', isMeta: true,
+          message: { content: [{ type: 'text', text: 'Base directory for this skill: /skills/review\n\n## Spec\nReview both axes.' }] } },
+        { type: 'assistant', uuid: 'a3', message: { content: [{ type: 'text', text: 'Reviewed both axes.' }] } },
+      ].map((entry) => JSON.stringify(entry)).join('\n'));
+      const stub = await startStubServer(t, (record, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ id: 'doc_harness', status: 'queued' }));
+      });
+
+      const { code } = await runHook(
+        'capture.js',
+        { session_id: 'harness-save', cwd: repo, transcript_path: transcript },
+        { HOME: home, USERPROFILE: home, SUPERMEMORY_API_URL: stub.url },
+      );
+      assert.equal(code, 0);
+      assert.ok(stub.requests.length >= 1);
+      const content = stub.requests.map((request) => JSON.parse(request.body).content).join('\n');
+      assert.match(content, /refactor the export module/);
+      assert.doesNotMatch(content, /task-notification|Monitor expired|Base directory for this skill|Review both axes\./);
+    });
+  }
 
   for (const settings of [{}, { signalExtraction: true }]) {
     test(`leaves side-agent notes out but keeps the reply that checks them (${JSON.stringify(settings)})`, async (t) => {

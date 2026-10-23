@@ -211,6 +211,7 @@ function formatEntry(entry) {
   const parts = [];
 
   if (entry.type === 'user') {
+    if (isHarnessEntry(entry)) return '';
     const formatted = formatUserMessage(entry.message);
     if (formatted) parts.push(formatted);
   } else if (entry.type === 'assistant') {
@@ -366,8 +367,14 @@ function getTextFromEntry(entry) {
   return '';
 }
 
+// Claude Code writes background task notifications and injected text (skills, hook feedback,
+// messages from other sessions) as user entries; none of them is the user's words or a new turn.
+function isHarnessEntry(entry) {
+  return Boolean(entry.isMeta) || entry.origin?.kind === 'task-notification';
+}
+
 function hasTextContent(entry) {
-  if (!entry || entry.isMeta) return false;
+  if (!entry || isHarnessEntry(entry)) return false;
   return getTextFromEntry(entry).length > 0;
 }
 
@@ -480,6 +487,7 @@ function getTurnsAroundSignals(turns, signalIndices, turnCount) {
 
 function formatEntryTextOnly(entry) {
   if (entry.type === 'user') {
+    if (isHarnessEntry(entry)) return null;
     return formatUserMessageTextOnly(entry.message);
   }
 

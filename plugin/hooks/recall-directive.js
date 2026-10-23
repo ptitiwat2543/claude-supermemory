@@ -47,6 +47,9 @@ const MAX_SEEN_HASHES = 500;
 
 function shouldSkip(prompt) {
   if (prompt.length < MIN_PROMPT_LENGTH) return true;
+  // Claude Code also sends background task notifications as prompts;
+  // searching on them only recalls old notifications.
+  if (prompt.startsWith('<task-notification>')) return true;
   return ['/', '!', '#'].includes(prompt[0]);
 }
 
